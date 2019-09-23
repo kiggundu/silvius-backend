@@ -241,6 +241,7 @@ class WorkerSocketHandler(tornado.websocket.WebSocketHandler):
     def __init__(self, application, request, **kwargs):
         tornado.websocket.WebSocketHandler.__init__(self, application, request, **kwargs)
         self.client_socket = None
+        self.grammar = ''
 
     # needed for Tornado 4.0
     def check_origin(self, origin):
@@ -260,12 +261,19 @@ class WorkerSocketHandler(tornado.websocket.WebSocketHandler):
         self.application.send_status_update()
 
     def on_message(self, message):
-        assert self.client_socket is not None
         event = json.loads(message)
-        self.client_socket.send_event(event)
+        if('announce-grammar' in event):
+            self.grammar = event['announce-grammar']
+            logging.info("Worker " + self.__str__() + " announced grammar '" + self.grammar + "'")
+        else:
+            assert self.client_socket is not None
+            self.client_socket.send_event(event)
 
     def set_client_socket(self, client_socket):
         self.client_socket = client_socket
+
+    def get_grammar(self):
+        return self.grammar
 
 
 class DecoderSocketHandler(tornado.websocket.WebSocketHandler):
@@ -276,8 +284,9 @@ class DecoderSocketHandler(tornado.websocket.WebSocketHandler):
     def send_event(self, event):
         event["id"] = self.id
         event_str = str(event)
-        if len(event_str) > 100:
-            event_str = event_str[:97] + "..."
+        # don't truncate long transcripts
+        #if len(event_str) > 100:
+        #    event_str = event_str[:97] + "..."
         logging.info("%s: Sending event %s to client" % (self.id, event_str))
         self.write_message(json.dumps(event))
 
@@ -287,11 +296,20 @@ class DecoderSocketHandler(tornado.websocket.WebSocketHandler):
         logging.info("%s: Request arguments: %s" % (self.id, " ".join(["%s=\"%s\"" % (a, self.get_argument(a)) for a in self.request.arguments])))
         self.user_id = self.get_argument("user-id", "none", True)
         self.content_id = self.get_argument("content-id", "none", True)
+        self.grammar = self.get_argument("grammar", '', True)
         self.worker = None
         try:
-            self.worker = self.application.available_workers.pop()
+            #loop through works
+            for w in self.application.available_workers:
+                if (w.get_grammar() == self.grammar):
+                    self.worker = w
+                    self.application.available_workers.discard(w)
+                    break
+            if self.worker == None:
+                raise KeyError("no match for '" + self.grammar + "'")
+
             self.application.send_status_update()
-            logging.info("%s: Using worker %s" % (self.id, self.__str__()))
+            logging.info("%s: Using worker %s with grammar %s" % (self.id, self.__str__(), self.grammar))
             self.worker.set_client_socket(self)
 
             content_type = self.get_argument("content-type", None, True)
@@ -300,8 +318,8 @@ class DecoderSocketHandler(tornado.websocket.WebSocketHandler):
 
             self.worker.write_message(json.dumps(dict(id=self.id, content_type=content_type, user_id=self.user_id, content_id=self.content_id)))
         except KeyError:
-            logging.warn("%s: No worker available for client request" % self.id)
-            event = dict(status=common.STATUS_NOT_AVAILABLE, message="No decoder available, try again later")
+            logging.warn("%s: No worker available for client request with grammar %s" % (self.id, self.grammar))
+            event = dict(status=common.STATUS_NOT_AVAILABLE, message="No decoder available for requested grammar, try again later")
             self.send_event(event)
             self.close()
 

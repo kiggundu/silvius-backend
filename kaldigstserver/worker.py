@@ -15,6 +15,7 @@ import codecs
 import zlib
 import base64
 import time
+import hashlib
 
 
 from ws4py.client.threadedclient import WebSocketClient
@@ -39,11 +40,12 @@ class ServerWebsocket(WebSocketClient):
     STATE_CANCELLING = 8
     STATE_FINISHED = 100
 
-    def __init__(self, uri, decoder_pipeline, post_processor, full_post_processor=None):
+    def __init__(self, uri, decoder_pipeline, post_processor, full_post_processor=None, grammar=''):
         self.uri = uri
         self.decoder_pipeline = decoder_pipeline
         self.post_processor = post_processor
         self.full_post_processor = full_post_processor
+        self.grammar = grammar
         WebSocketClient.__init__(self, url=uri, heartbeat_freq=10)
         self.pipeline_initialized = False
         self.partial_transcript = ""
@@ -66,6 +68,8 @@ class ServerWebsocket(WebSocketClient):
         logger.info("Opened websocket connection to server")
         self.state = self.STATE_CONNECTED
         self.last_partial_result = ""
+        announcement = {'announce-grammar': self.grammar}
+        self.send(json.dumps(announcement))
 
     def guard_timeout(self):
         global SILENCE_TIMEOUT
@@ -320,9 +324,16 @@ def main():
         tornado.process.fork_processes(args.fork)
 
     conf = {}
+    grammar = ''
     if args.conf:
         with open(args.conf) as f:
             conf = yaml.safe_load(f)
+        with open(args.conf) as f:
+            h = hashlib.sha256()
+            for line in f:
+                h.update(line)
+            print "HASH:", h.hexdigest()
+            grammar = h.hexdigest()
 
     if "logging" in conf:
         logging.config.dictConfig(conf["logging"])
@@ -350,7 +361,7 @@ def main():
     loop = GObject.MainLoop()
     thread.start_new_thread(loop.run, ())
     while True:
-        ws = ServerWebsocket(args.uri, decoder_pipeline, post_processor, full_post_processor=full_post_processor)
+        ws = ServerWebsocket(args.uri, decoder_pipeline, post_processor, full_post_processor=full_post_processor, grammar=grammar)
         try:
             logger.info("Opening websocket connection to master server")
             ws.connect()
