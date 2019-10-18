@@ -242,6 +242,7 @@ class WorkerSocketHandler(tornado.websocket.WebSocketHandler):
         tornado.websocket.WebSocketHandler.__init__(self, application, request, **kwargs)
         self.client_socket = None
         self.grammar = ''
+        self.grammar_list = []
 
     # needed for Tornado 4.0
     def check_origin(self, origin):
@@ -263,8 +264,10 @@ class WorkerSocketHandler(tornado.websocket.WebSocketHandler):
     def on_message(self, message):
         event = json.loads(message)
         if('announce-grammar' in event):
-            self.grammar = event['announce-grammar']
-            logging.info("Worker " + self.__str__() + " announced grammar '" + self.grammar + "'")
+            self.grammar_list = event['announce-grammar']
+            self.grammar = self.grammar_list[0]
+            logging.info("Worker " + self.__str__() + " announced grammars " + str(self.grammar_list))
+        #announce grammar list in worker handle
         else:
             assert self.client_socket is not None
             self.client_socket.send_event(event)
@@ -274,8 +277,12 @@ class WorkerSocketHandler(tornado.websocket.WebSocketHandler):
 
     def get_grammar(self):
         return self.grammar
+    
+    def get_grammar_list(self):
+        return self.grammar_list
 
 
+# client connects
 class DecoderSocketHandler(tornado.websocket.WebSocketHandler):
     # needed for Tornado 4.0
     def check_origin(self, origin):
@@ -299,12 +306,25 @@ class DecoderSocketHandler(tornado.websocket.WebSocketHandler):
         self.grammar = self.get_argument("grammar", '', True)
         self.worker = None
         try:
+
+            #loop twice 
             #loop through works
             for w in self.application.available_workers:
-                if (w.get_grammar() == self.grammar):
+                if(self.grammar == w.get_grammar()):
                     self.worker = w
                     self.application.available_workers.discard(w)
                     break
+            if self.worker == None:
+                for w in self.application.available_workers:
+                    for v in w.get_grammar_list():
+                        if(v == self.grammar):
+                            self.worker = w
+                            self.application.available_workers.discard(w)
+                            break
+#                if (w.get_grammar() == self.grammar):
+#                    self.worker = w
+#                    self.application.available_workers.discard(w)
+#                    break
             if self.worker == None:
                 raise KeyError("no match for '" + self.grammar + "'")
 
@@ -316,7 +336,7 @@ class DecoderSocketHandler(tornado.websocket.WebSocketHandler):
             if content_type:
                 logging.info("%s: Using content type: %s" % (self.id, content_type))
 
-            self.worker.write_message(json.dumps(dict(id=self.id, content_type=content_type, user_id=self.user_id, content_id=self.content_id)))
+            self.worker.write_message(json.dumps(dict(id=self.id, content_type=content_type, user_id=self.user_id, content_id=self.content_id, requested_grammar=self.grammar)))
         except KeyError:
             logging.warn("%s: No worker available for client request with grammar %s" % (self.id, self.grammar))
             event = dict(status=common.STATUS_NOT_AVAILABLE, message="No decoder available for requested grammar, try again later")

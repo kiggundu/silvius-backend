@@ -46,6 +46,7 @@ class DecoderPipeline2(object):
         self.filesink = Gst.ElementFactory.make("filesink", "filesink")
         self.queue2 = Gst.ElementFactory.make("queue", "queue2")
         self.asr = Gst.ElementFactory.make("kaldinnet2onlinedecoder", "asr")
+        ###self.asr = Gst.ElementFactory.make("../gst-kaldi-nnet2-online/src/libgstkaldionline2.so", "asr")
         self.fakesink = Gst.ElementFactory.make("fakesink", "fakesink")
 
         # This needs to be set first

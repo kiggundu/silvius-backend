@@ -40,12 +40,13 @@ class ServerWebsocket(WebSocketClient):
     STATE_CANCELLING = 8
     STATE_FINISHED = 100
 
-    def __init__(self, uri, decoder_pipeline, post_processor, full_post_processor=None, grammar=''):
+    def __init__(self, uri, decoder_pipeline, post_processor, full_post_processor=None, grammar='', grammar_list=[]):
         self.uri = uri
         self.decoder_pipeline = decoder_pipeline
         self.post_processor = post_processor
         self.full_post_processor = full_post_processor
         self.grammar = grammar
+        self.grammar_list = grammar_list
         WebSocketClient.__init__(self, url=uri, heartbeat_freq=10)
         self.pipeline_initialized = False
         self.partial_transcript = ""
@@ -68,7 +69,7 @@ class ServerWebsocket(WebSocketClient):
         logger.info("Opened websocket connection to server")
         self.state = self.STATE_CONNECTED
         self.last_partial_result = ""
-        announcement = {'announce-grammar': self.grammar}
+        announcement = {'announce-grammar': self.grammar_list}
         self.send(json.dumps(announcement))
 
     def guard_timeout(self):
@@ -94,6 +95,7 @@ class ServerWebsocket(WebSocketClient):
             props = json.loads(str(m))
             content_type = props['content_type']
             self.request_id = props['id']
+            self.new_grammar_XXXXXXX = props['requested_grammar']
             self.num_segments = 0
             self.decoder_pipeline.init_request(self.request_id, content_type)
             self.last_decoder_message = time.time()
@@ -325,6 +327,12 @@ def main():
 
     conf = {}
     grammar = ''
+    # change! each owrk should remember what grammar it has
+    # made change so that we have a grammar_list
+    # to do: how to get all the grammar it supports?
+    # what is args.conf
+    grammar_list = []
+
     if args.conf:
         with open(args.conf) as f:
             conf = yaml.safe_load(f)
@@ -334,6 +342,7 @@ def main():
                 h.update(line)
             print "HASH:", h.hexdigest()
             grammar = h.hexdigest()
+            grammar_list.append(grammar)
 
     if "logging" in conf:
         logging.config.dictConfig(conf["logging"])
@@ -361,7 +370,7 @@ def main():
     loop = GObject.MainLoop()
     thread.start_new_thread(loop.run, ())
     while True:
-        ws = ServerWebsocket(args.uri, decoder_pipeline, post_processor, full_post_processor=full_post_processor, grammar=grammar)
+        ws = ServerWebsocket(args.uri, decoder_pipeline, post_processor, full_post_processor=full_post_processor, grammar=grammar, grammar_list=grammar_list)
         try:
             logger.info("Opening websocket connection to master server")
             ws.connect()
