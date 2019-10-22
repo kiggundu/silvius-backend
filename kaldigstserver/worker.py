@@ -40,10 +40,10 @@ class SpeechDecoder:
 
     def terminate(self):
         self.decoder_pipeline = None
-        if self.post_processor != None:
+        if self.post_processor:
             self.post_processor.terminate()
             self.post_processor = None
-        if self.full_post_processor != None:
+        if self.full_post_processor:
             self.full_post_processor.terminate()
             self.full_post_processor = None
 
@@ -89,7 +89,7 @@ class SpeechDecoderList:
         conf = self.conf_map[grammar]
         if not conf:
             return False  # no such grammar
-        if self.current_grammar != None:
+        if self.current_grammar:
             if self.current_grammar == grammar:
                 return True  # Already activated
             self.deactivate(self.current_grammar)
@@ -99,7 +99,7 @@ class SpeechDecoderList:
         return True
 
     def deactivate(self, grammar):
-        if self.decoder_map[grammar] != None:
+        if self.decoder_map[grammar]:
             self.decoder_map[grammar].terminate()
             self.decoder_map[grammar] = None
         self.current_grammar = None
