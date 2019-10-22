@@ -308,14 +308,16 @@ class DecoderSocketHandler(tornado.websocket.WebSocketHandler):
         try:
 
             #loop twice 
-            #loop through works
-            for w in self.application.available_workers:
+            #loop through workers
+            # this set is frequently modified while we are iterating through it, make a copy
+            available_workers = set(self.application.available_workers)
+            for w in available_workers:
                 if(self.grammar == w.get_grammar()):
                     self.worker = w
                     self.application.available_workers.discard(w)
                     break
             if self.worker == None:
-                for w in self.application.available_workers:
+                for w in available_workers:
                     for v in w.get_grammar_list():
                         if(v == self.grammar):
                             self.worker = w

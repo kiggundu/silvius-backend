@@ -409,7 +409,7 @@ def main():
     parser = argparse.ArgumentParser(description='Worker for kaldigstserver')
     parser.add_argument('-u', '--uri', default="ws://localhost:8019/worker/ws/speech", dest="uri", help="Server<-->worker websocket URI")
     parser.add_argument('-f', '--fork', default=1, dest="fork", type=int)
-    parser.add_argument('-c', '--conf', dest="conf", help="YAML file with decoder configuration")
+    parser.add_argument('-c', '--conf', dest="conf", action='append', help="YAML file with decoder configuration")
 
     args = parser.parse_args()
 
@@ -419,31 +419,22 @@ def main():
         logging.info("Forking into %d processes" % args.fork)
         tornado.process.fork_processes(args.fork)
 
-    conf = {}
-    grammar = ''
-    # change! each owrk should remember what grammar it has
-    # made change so that we have a grammar_list
-    # to do: how to get all the grammar it supports?
-    # what is args.conf
-    #grammar_list = []
+    decoder_list = SpeechDecoderList()
 
-    if args.conf:
-        with open(args.conf) as f:
+    for conf_file in args.conf:
+        conf = {}
+        with open(conf_file) as f:
             conf = yaml.safe_load(f)
-        with open(args.conf) as f:
+        with open(conf_file) as f:
             h = hashlib.sha256()
             for line in f:
                 h.update(line)
-            print "HASH:", h.hexdigest()
             grammar = h.hexdigest()
-            #grammar_list.append(grammar)
+            print "HASH:", grammar
+            decoder_list.add(conf, grammar)
+        if "logging" in conf:
+            logging.config.dictConfig(conf["logging"])
 
-    if "logging" in conf:
-        logging.config.dictConfig(conf["logging"])
-
-    decoder_list = SpeechDecoderList()
-    decoder_list.add(conf, grammar)
-    #decoder = SpeechDecoder.create(conf, grammar)
 
     loop = GObject.MainLoop()
     thread.start_new_thread(loop.run, ())
