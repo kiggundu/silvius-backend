@@ -86,15 +86,17 @@ class SpeechDecoderList:
             self.activate(grammar)
 
     def activate(self, grammar):
-        if self.current_grammar != None:
-            self.deactivate(self.current_grammar)
-            if self.current_grammar == grammar:
-                return  # Already activated
-            self.deactivate(self.current_grammar)
         conf = self.conf_map[grammar]
+        if not conf:
+            return False  # no such grammar
+        if self.current_grammar != None:
+            if self.current_grammar == grammar:
+                return True  # Already activated
+            self.deactivate(self.current_grammar)
         self.decoder_map[grammar] = SpeechDecoder.create(conf, grammar)
         self.current_grammar = grammar
         self.current_decoder = self.decoder_map[grammar]
+        return True
 
     def deactivate(self, grammar):
         if self.decoder_map[grammar] != None:
@@ -121,24 +123,11 @@ class ServerWebsocket(WebSocketClient):
     STATE_CANCELLING = 8
     STATE_FINISHED = 100
 
-    def __init__(self, uri, decoder_pipeline, post_processor, full_post_processor=None, grammar='', grammar_list=[]):
+    def __init__(self, uri, decoder_list):
         self.uri = uri
-        self.decoder_pipeline = decoder_pipeline
-        self.post_processor = post_processor
-        self.full_post_processor = full_post_processor
-        self.grammar = grammar
-        self.grammar_list = grammar_list
+        self.decoder_list = decoder_list
         WebSocketClient.__init__(self, url=uri, heartbeat_freq=10)
-        self.pipeline_initialized = False
         self.partial_transcript = ""
-        if USE_NNET2:
-            self.decoder_pipeline.set_result_handler(self._on_result)
-            self.decoder_pipeline.set_full_result_handler(self._on_full_result)
-            self.decoder_pipeline.set_error_handler(self._on_error)
-        else:
-            self.decoder_pipeline.set_word_handler(self._on_word)
-            self.decoder_pipeline.set_error_handler(self._on_error)
-        self.decoder_pipeline.set_eos_handler(self._on_eos)
         self.state = self.STATE_CREATED
         self.last_decoder_message = time.time()
         self.request_id = "<undefined>"
@@ -146,11 +135,14 @@ class ServerWebsocket(WebSocketClient):
         self.num_segments = 0
         self.last_partial_result = ""
 
+    def get_decoder(self):
+        return self.decoder_list.get_decoder()
+
     def opened(self):
         logger.info("Opened websocket connection to server")
         self.state = self.STATE_CONNECTED
         self.last_partial_result = ""
-        announcement = {'announce-grammar': self.grammar_list}
+        announcement = {'announce-grammar': self.decoder_list.get_grammar_list()}
         self.send(json.dumps(announcement))
 
     def guard_timeout(self):
@@ -176,9 +168,26 @@ class ServerWebsocket(WebSocketClient):
             props = json.loads(str(m))
             content_type = props['content_type']
             self.request_id = props['id']
-            self.new_grammar_XXXXXXX = props['requested_grammar']
             self.num_segments = 0
-            self.decoder_pipeline.init_request(self.request_id, content_type)
+
+            # Initialize decoder for requested grammar
+            if(not self.decoder_list.activate(props['requested_grammar'])):
+                logger.error("%s: Client requested unsupported grammar '%s', disconnecting" % (self.request_id))
+                self.state = self.STATE_FINISHED
+                self.close()
+                return
+            decoder_pipeline = self.get_decoder().decoder_pipeline
+            if USE_NNET2:
+                decoder_pipeline.set_result_handler(self._on_result)
+                decoder_pipeline.set_full_result_handler(self._on_full_result)
+                decoder_pipeline.set_error_handler(self._on_error)
+            else:
+                decoder_pipeline.set_word_handler(self._on_word)
+                decoder_pipeline.set_error_handler(self._on_error)
+            decoder_pipeline.set_eos_handler(self._on_eos)
+
+            decoder_pipeline.init_request(self.request_id, content_type)
+
             self.last_decoder_message = time.time()
             thread.start_new_thread(self.guard_timeout, ())
             logger.info("%s: Started timeout guard" % self.request_id)
@@ -186,14 +195,14 @@ class ServerWebsocket(WebSocketClient):
             self.state = self.STATE_INITIALIZED
         elif m.data == "EOS":
             if self.state != self.STATE_CANCELLING and self.state != self.STATE_EOS_RECEIVED and self.state != self.STATE_FINISHED:
-                self.decoder_pipeline.end_request()
+                self.get_decoder().decoder_pipeline.end_request()
                 self.state = self.STATE_EOS_RECEIVED
             else:
                 logger.info("%s: Ignoring EOS, worker already in state %d" % (self.request_id, self.state))
         else:
             if self.state != self.STATE_CANCELLING and self.state != self.STATE_EOS_RECEIVED and self.state != self.STATE_FINISHED:
                 if isinstance(m, ws4py.messaging.BinaryMessage):
-                    self.decoder_pipeline.process_data(m.data)
+                    self.get_decoder().decoder_pipeline.process_data(m.data)
                     self.state = self.STATE_PROCESSING
                 elif isinstance(m, ws4py.messaging.TextMessage):
                     props = json.loads(str(m))
@@ -202,7 +211,7 @@ class ServerWebsocket(WebSocketClient):
                         if as_props.get('type', "") == "string+gzip+base64":
                             adaptation_state = zlib.decompress(base64.b64decode(as_props.get('value', '')))
                             logger.info("%s: Setting adaptation state to user-provided value" % (self.request_id))
-                            self.decoder_pipeline.set_adaptation_state(adaptation_state)
+                            self.get_decoder().decoder_pipeline.set_adaptation_state(adaptation_state)
                         else:
                             logger.warning("%s: Cannot handle adaptation state type " % (self.request_id, as_props.get('type', "")))
                     else:
@@ -214,18 +223,19 @@ class ServerWebsocket(WebSocketClient):
     def finish_request(self):
         if self.state == self.STATE_CONNECTED:
             # connection closed when we are not doing anything
-            self.decoder_pipeline.finish_request()
+            if self.get_decoder():
+                self.get_decoder().decoder_pipeline.finish_request()
             self.state = self.STATE_FINISHED
             return
         if self.state == self.STATE_INITIALIZED:
             # connection closed when request initialized but with no data sent
-            self.decoder_pipeline.finish_request()
+            self.get_decoder().decoder_pipeline.finish_request()
             self.state = self.STATE_FINISHED
             return
         if self.state != self.STATE_FINISHED:
             logger.info("%s: Master disconnected before decoder reached EOS?" % self.request_id)
             self.state = self.STATE_CANCELLING
-            self.decoder_pipeline.cancel()
+            self.get_decoder().decoder_pipeline.cancel()
             counter = 0
             while self.state == self.STATE_CANCELLING:
                 counter += 1
@@ -237,7 +247,7 @@ class ServerWebsocket(WebSocketClient):
                 else:
                     logger.info("%s: Waiting for EOS from decoder" % self.request_id)
                     time.sleep(1)
-            self.decoder_pipeline.finish_request()
+            self.get_decoder().decoder_pipeline.finish_request()
             logger.info("%s: Finished waiting for EOS" % self.request_id)
 
 
@@ -340,9 +350,10 @@ class ServerWebsocket(WebSocketClient):
         self.close()
 
     def send_adaptation_state(self):
-        if hasattr(self.decoder_pipeline, 'get_adaptation_state'):
+        decoder_pipeline = self.get_decoder().decoder_pipeline
+        if hasattr(decoder_pipeline, 'get_adaptation_state'):
             logger.info("%s: Sending adaptation state to client..." % (self.request_id))
-            adaptation_state = self.decoder_pipeline.get_adaptation_state()
+            adaptation_state = decoder_pipeline.get_adaptation_state()
             event = dict(status=common.STATUS_SUCCESS,
                          adaptation_state=dict(id=self.request_id,
                                                value=base64.b64encode(zlib.compress(adaptation_state)),
@@ -358,10 +369,11 @@ class ServerWebsocket(WebSocketClient):
 
 
     def post_process(self, text):
-        if self.post_processor:
-            self.post_processor.stdin.write("%s\n" % text.encode("utf-8"))
-            self.post_processor.stdin.flush()
-            text = self.post_processor.stdout.readline().decode("utf-8")
+        pp = self.get_decoder().post_processor
+        if pp:
+            pp.stdin.write("%s\n" % text.encode("utf-8"))
+            pp.stdin.flush()
+            text = pp.stdout.readline().decode("utf-8")
             text = text.strip()
             text = text.replace("\\n", "\n")
             return text
@@ -369,19 +381,20 @@ class ServerWebsocket(WebSocketClient):
             return text
 
     def post_process_full(self, full_result):
-        if self.full_post_processor:
-            self.full_post_processor.stdin.write("%s\n\n" % json.dumps(full_result))
-            self.full_post_processor.stdin.flush()
+        pp = self.get_decoder().full_post_processor
+        if pp:
+            pp.stdin.write("%s\n\n" % json.dumps(full_result))
+            pp.stdin.flush()
             lines = []
             while True:
-                l = self.full_post_processor.stdout.readline()
+                l = pp.stdout.readline()
                 if not l: break # EOF
                 if l.strip() == "":
                     break
                 lines.append(l)
             full_result = json.loads("".join(lines))
 
-        elif self.post_processor:
+        elif self.get_decoder().post_processor:
             for hyp in full_result.get("result", {}).get("hypotheses", []):
                 hyp["original-transcript"] = hyp["transcript"]
                 hyp["transcript"] = self.post_process(hyp["transcript"])
@@ -412,7 +425,7 @@ def main():
     # made change so that we have a grammar_list
     # to do: how to get all the grammar it supports?
     # what is args.conf
-    grammar_list = []
+    #grammar_list = []
 
     if args.conf:
         with open(args.conf) as f:
@@ -423,37 +436,19 @@ def main():
                 h.update(line)
             print "HASH:", h.hexdigest()
             grammar = h.hexdigest()
-            grammar_list.append(grammar)
+            #grammar_list.append(grammar)
 
     if "logging" in conf:
         logging.config.dictConfig(conf["logging"])
 
-    #decoder_pipeline, post_processor, full_post_processor = Decoder(self,conf)
-    decoder = SpeechDecoder.create(conf, grammar)
-    '''
-    # fork off the post-processors before we load the model into memory
-    post_processor = None
-    if "post-processor" in conf:
-        post_processor = Popen(conf["post-processor"], shell=True, stdin=PIPE, stdout=PIPE)
+    decoder_list = SpeechDecoderList()
+    decoder_list.add(conf, grammar)
+    #decoder = SpeechDecoder.create(conf, grammar)
 
-    full_post_processor = None
-    if "full-post-processor" in conf:
-        full_post_processor = Popen(conf["full-post-processor"], shell=True, stdin=PIPE, stdout=PIPE)
-
-    global USE_NNET2
-    USE_NNET2 = conf.get("use-nnet2", False)
-
-    global SILENCE_TIMEOUT
-    SILENCE_TIMEOUT = conf.get("silence-timeout", 5)
-    if USE_NNET2:
-        decoder_pipeline = DecoderPipeline2(conf)
-    else:
-        decoder_pipeline = DecoderPipeline(conf)
-'''
     loop = GObject.MainLoop()
     thread.start_new_thread(loop.run, ())
     while True:
-        ws = ServerWebsocket(args.uri, decoder_pipeline, post_processor, full_post_processor=full_post_processor, grammar=grammar, grammar_list=grammar_list)
+        ws = ServerWebsocket(args.uri, decoder_list)
         try:
             logger.info("Opening websocket connection to master server")
             ws.connect()
@@ -463,28 +458,6 @@ def main():
             time.sleep(CONNECT_TIMEOUT)
         # fixes a race condition
         time.sleep(1)
-
-def Decoder(self, conf):
-     # fork off the post-processors before we load the model into memory
-    post_processor = None
-    if "post-processor" in conf:
-        post_processor = Popen(conf["post-processor"], shell=True, stdin=PIPE, stdout=PIPE)
-
-    full_post_processor = None
-    if "full-post-processor" in conf:
-        full_post_processor = Popen(conf["full-post-processor"], shell=True, stdin=PIPE, stdout=PIPE)
-
-    global USE_NNET2
-    USE_NNET2 = conf.get("use-nnet2", False)
-
-    global SILENCE_TIMEOUT
-    SILENCE_TIMEOUT = conf.get("silence-timeout", 5)
-    if USE_NNET2:
-        decoder_pipeline = DecoderPipeline2(conf)
-    else:
-        decoder_pipeline = DecoderPipeline(conf)
-    
-    return post_processor, full_post_processor, decoder_pipeline
 
 
 if __name__ == "__main__":

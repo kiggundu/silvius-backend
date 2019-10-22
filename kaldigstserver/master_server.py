@@ -329,7 +329,7 @@ class DecoderSocketHandler(tornado.websocket.WebSocketHandler):
                 raise KeyError("no match for '" + self.grammar + "'")
 
             self.application.send_status_update()
-            logging.info("%s: Using worker %s with grammar %s" % (self.id, self.__str__(), self.grammar))
+            logging.info("%s: Using worker %s with grammar '%s'" % (self.id, self.__str__(), self.grammar))
             self.worker.set_client_socket(self)
 
             content_type = self.get_argument("content-type", None, True)
@@ -338,7 +338,7 @@ class DecoderSocketHandler(tornado.websocket.WebSocketHandler):
 
             self.worker.write_message(json.dumps(dict(id=self.id, content_type=content_type, user_id=self.user_id, content_id=self.content_id, requested_grammar=self.grammar)))
         except KeyError:
-            logging.warn("%s: No worker available for client request with grammar %s" % (self.id, self.grammar))
+            logging.warn("%s: No worker available for client request with grammar '%s'" % (self.id, self.grammar))
             event = dict(status=common.STATUS_NOT_AVAILABLE, message="No decoder available for requested grammar, try again later")
             self.send_event(event)
             self.close()
