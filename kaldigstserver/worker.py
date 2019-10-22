@@ -347,6 +347,8 @@ def main():
     if "logging" in conf:
         logging.config.dictConfig(conf["logging"])
 
+    decoder_pipeline, post_processor, full_post_processor = Decode(self,conf)
+'''
     # fork off the post-processors before we load the model into memory
     post_processor = None
     if "post-processor" in conf:
@@ -365,7 +367,7 @@ def main():
         decoder_pipeline = DecoderPipeline2(conf)
     else:
         decoder_pipeline = DecoderPipeline(conf)
-
+'''
 
     loop = GObject.MainLoop()
     thread.start_new_thread(loop.run, ())
@@ -380,6 +382,29 @@ def main():
             time.sleep(CONNECT_TIMEOUT)
         # fixes a race condition
         time.sleep(1)
+
+def Decoder(self, conf):
+     # fork off the post-processors before we load the model into memory
+    post_processor = None
+    if "post-processor" in conf:
+        post_processor = Popen(conf["post-processor"], shell=True, stdin=PIPE, stdout=PIPE)
+
+    full_post_processor = None
+    if "full-post-processor" in conf:
+        full_post_processor = Popen(conf["full-post-processor"], shell=True, stdin=PIPE, stdout=PIPE)
+
+    global USE_NNET2
+    USE_NNET2 = conf.get("use-nnet2", False)
+
+    global SILENCE_TIMEOUT
+    SILENCE_TIMEOUT = conf.get("silence-timeout", 5)
+    if USE_NNET2:
+        decoder_pipeline = DecoderPipeline2(conf)
+    else:
+        decoder_pipeline = DecoderPipeline(conf)
+    
+    return post_processor, full_post_processor, decoder_pipeline
+
 
 if __name__ == "__main__":
     main()
