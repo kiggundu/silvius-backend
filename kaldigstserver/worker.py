@@ -31,6 +31,87 @@ CONNECT_TIMEOUT = 5
 SILENCE_TIMEOUT = 5
 USE_NNET2 = False
 
+class SpeechDecoder:
+    def __init__(self, decoder_pipeline, post_processor, full_post_processor=None, grammar=''):
+        self.decoder_pipeline = decoder_pipeline
+        self.post_processor = post_processor
+        self.full_post_processor = full_post_processor
+        self.grammar = grammar
+
+    def terminate(self):
+        self.decoder_pipeline = None
+        if self.post_processor != None:
+            self.post_processor.terminate()
+            self.post_processor = None
+        if self.full_post_processor != None:
+            self.full_post_processor.terminate()
+            self.full_post_processor = None
+
+    @staticmethod
+    def create(conf, grammar):
+        # fork off the post-processors before we load the model into memory
+        post_processor = None
+        if "post-processor" in conf:
+            post_processor = Popen(conf["post-processor"], shell=True, stdin=PIPE, stdout=PIPE)
+
+        full_post_processor = None
+        if "full-post-processor" in conf:
+            full_post_processor = Popen(conf["full-post-processor"], shell=True, stdin=PIPE, stdout=PIPE)
+
+        global USE_NNET2
+        USE_NNET2 = conf.get("use-nnet2", False)
+
+        global SILENCE_TIMEOUT
+        SILENCE_TIMEOUT = conf.get("silence-timeout", 5)
+        if USE_NNET2:
+            decoder_pipeline = DecoderPipeline2(conf)
+        else:
+            decoder_pipeline = DecoderPipeline(conf)
+
+        return SpeechDecoder(decoder_pipeline, post_processor, full_post_processor, grammar)
+
+class SpeechDecoderList:
+    def __init__(self):
+        self.grammar_list = []
+        self.conf_map = {}
+        self.decoder_map = {}
+        self.current_grammar = None
+        self.current_decoder = None
+
+    def add(self, conf, grammar, enabled=False):
+        self.grammar_list.append(grammar)
+        self.conf_map[grammar] = conf
+        self.decoder_map[grammar] = None
+        if enabled:
+            self.activate(grammar)
+
+    def activate(self, grammar):
+        if self.current_grammar != None:
+            self.deactivate(self.current_grammar)
+            if self.current_grammar == grammar:
+                return  # Already activated
+            self.deactivate(self.current_grammar)
+        conf = self.conf_map[grammar]
+        self.decoder_map[grammar] = SpeechDecoder.create(conf, grammar)
+        self.current_grammar = grammar
+        self.current_decoder = self.decoder_map[grammar]
+
+    def deactivate(self, grammar):
+        if self.decoder_map[grammar] != None:
+            self.decoder_map[grammar].terminate()
+            self.decoder_map[grammar] = None
+        self.current_grammar = None
+        self.current_decoder = None
+
+    def get_grammar(self):
+        return self.current_grammar
+    def get_decoder(self):
+        return self.current_decoder
+
+    def get_grammar_list(self):
+        return self.grammar_list
+
+
 class ServerWebsocket(WebSocketClient):
     STATE_CREATED = 0
     STATE_CONNECTED = 1
@@ -347,8 +428,9 @@ def main():
     if "logging" in conf:
         logging.config.dictConfig(conf["logging"])
 
-    decoder_pipeline, post_processor, full_post_processor = Decode(self,conf)
-'''
+    #decoder_pipeline, post_processor, full_post_processor = Decoder(self,conf)
+    decoder = SpeechDecoder.create(conf, grammar)
+    '''
     # fork off the post-processors before we load the model into memory
     post_processor = None
     if "post-processor" in conf:
@@ -368,7 +450,6 @@ def main():
     else:
         decoder_pipeline = DecoderPipeline(conf)
 '''
-
     loop = GObject.MainLoop()
     thread.start_new_thread(loop.run, ())
     while True:
